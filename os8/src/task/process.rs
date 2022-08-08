@@ -30,6 +30,14 @@ pub struct ProcessControlBlockInner {
     pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// whether deadlock detection is enabled
+    pub deadlock_detect: bool,
+
+    pub mutex_alloc: Vec<Option<usize>>, // [mutex_id] -> tid，用来表示各个锁的分配情况
+    pub mutex_request: Vec<Option<usize>>, // [tid] -> mutex_id，用来表示各个线程对锁的请求情况
+    pub sem_avail: Vec<usize>,           // [mid] -> num，表示各个信号量的可用数量
+    pub sem_alloc: Vec<Vec<usize>>, // [tid] -> {sid, num}，用来表示各个信号量给每个线程的分配情况
+    pub sem_request: Vec<Option<usize>>, // [tid] -> sid，表示各个线程对信号量的请求情况
 }
 
 impl ProcessControlBlockInner {
@@ -97,6 +105,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_alloc: Vec::new(),
+                    mutex_request: Vec::new(),
+                    sem_avail: Vec::new(),
+                    sem_alloc: Vec::new(),
+                    sem_request: Vec::new(),
                 })
             },
         });
@@ -122,6 +136,13 @@ impl ProcessControlBlock {
         // add main thread to the process
         let mut process_inner = process.inner_exclusive_access();
         process_inner.tasks.push(Some(Arc::clone(&task)));
+        process_inner.mutex_request.push(None);
+        process_inner.sem_request.push(None);
+        let sem_len = process_inner.sem_avail.len();
+        process_inner.sem_alloc.push(vec![0; sem_len]);
+
+        assert!(process_inner.semaphore_list.len() == process_inner.sem_avail.len());
+        assert!(process_inner.tasks.len() == process_inner.sem_request.len());
         drop(process_inner);
         // add main thread to scheduler
         add_task(task);
@@ -189,6 +210,7 @@ impl ProcessControlBlock {
     pub fn fork(self: &Arc<Self>) -> Arc<Self> {
         let mut parent = self.inner_exclusive_access();
         assert_eq!(parent.thread_count(), 1);
+        let deadlock_detect = parent.deadlock_detect;
         // clone parent's memory_set completely including trampoline/ustacks/trap_cxs
         let memory_set = MemorySet::from_existed_user(&parent.memory_set);
         // alloc a pid
@@ -218,6 +240,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect,
+                    mutex_alloc: Vec::new(),
+                    mutex_request: Vec::new(),
+                    sem_avail: Vec::new(),
+                    sem_alloc: Vec::new(),
+                    sem_request: Vec::new(),
                 })
             },
         });
@@ -240,6 +268,13 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+        child_inner.mutex_request.push(None);
+        child_inner.sem_request.push(None);
+        let sem_len = child_inner.sem_avail.len();
+        child_inner.sem_alloc.push(vec![0; sem_len]);
+
+        assert!(child_inner.semaphore_list.len() == child_inner.sem_avail.len());
+        assert!(child_inner.tasks.len() == child_inner.sem_request.len());
         drop(child_inner);
         // modify kernel_stack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();
@@ -272,6 +307,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_alloc: Vec::new(),
+                    mutex_request: Vec::new(),
+                    sem_avail: Vec::new(),
+                    sem_alloc: Vec::new(),
+                    sem_request: Vec::new(),
                 })
             },
         });
